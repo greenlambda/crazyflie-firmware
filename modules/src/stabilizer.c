@@ -54,7 +54,7 @@
  */
 #define ATTITUDE_UPDATE_RATE_DIVIDER  2
 #define FUSION_UPDATE_DT  (float)(1.0 / (IMU_UPDATE_FREQ / ATTITUDE_UPDATE_RATE_DIVIDER)) // 250hz// Barometer/ Altitude hold stuff
-#define ALTHOLD_UPDATE_RATE_DIVIDER  5 // 500hz/5 = 100hz for barometer measurements#define ALTHOLD_UPDATE_DT  (float)(1.0 / (IMU_UPDATE_FREQ / ALTHOLD_UPDATE_RATE_DIVIDER))   // 500hz#define KP1	(0.55)	//PI Observer velocity gain#define KP2	(1.0)	//PI Observer position gain#define KI	(0.001)	//PI Observer integral gain (bias cancellation)static Axis3f gyro; // Gyro axis data in deg/s
+#define ALTHOLD_UPDATE_RATE_DIVIDER  5 // 500hz/5 = 100hz for barometer measurements#define ALTHOLD_UPDATE_DT  (float)(1.0 / (IMU_UPDATE_FREQ / ALTHOLD_UPDATE_RATE_DIVIDER))   // 500hzstatic Axis3f gyro; // Gyro axis data in deg/s
 static Axis3f acc;  // Accelerometer axis data in mG
 static Axis3f mag;  // Magnetometer axis data in testla
 
@@ -82,10 +82,14 @@ bool setAltHold = false;      // Hover mode has just been activated
 static float accWZ = 0.0;
 static float accMAG = 0.0;
 static float vSpeed = 0.0; // Vertical speed (world frame) integrated from vertical acceleration
+static float vSpeedComp = 0.0; // Compensated vertical (world frame) speed with controller
 static float altHoldPIDVal;                    // Output of the PID controller
 static float altHoldErr;                       // Different between target and current altitude
 
 // Altitude hold & Baro Params
+static float altEstKp1 = 0.55; //PI Observer velocity gain
+static float altEstKp2 = 1.0;  //PI Observer positional gain
+static float altEstKi  = 0.001; //PI Observer integral gain (bias cancellation)
 static float altHoldKp = 0.5; // PID gain constants, used everytime we reinitialise the PID controller
 static float altHoldKi = 0.18;
 static float altHoldKd = 0.0;
@@ -95,13 +99,10 @@ static float altHoldErrMax = 1.0; // max cap on current estimated altitude vs ta
 static float altHoldChange_SENS = 200; // sensitivity of target altitude change (thrust input control) while hovering. Lower = more sensitive & faster changes
 static float pidAslFac = 13000; // relates meters asl to thrust
 static float pidAlpha = 0.8;   // PID Smoothing //TODO: shouldnt need to do this
-static float vAccDeadband = 0.05;  // Vertical acceleration deadband
+static float vAccDeadband = 0.07;  // Vertical acceleration deadband
 static float vSpeedASLDeadband = 0.005; // Vertical speed based on barometer readings deadband
-static float vSpeedLimit = 0.05;  // used to constrain vertical velocity
+static float vSpeedLimit = 5.0;  // (m/s) used to constrain vertical velocity
 static float errDeadband = 0.00;  // error (target - altitude) deadband
-static float vBiasAlpha = 0.91; // Blending factor we use to fuse vSpeedASL and vSpeedAcc
-static float aslAlpha = 0.92; // Short term smoothing
-static float aslAlphaLong = 0.93; // Long term smoothing
 static uint16_t altHoldMinThrust = 00000; // minimum hover thrust - not used yet
 static uint16_t altHoldBaseThrust = 43000; // approximate throttle needed when in perfect hover. More weight/older battery can use a higher value
 static uint16_t altHoldMaxThrust = 60000; // max altitude hold thrust
@@ -120,12 +121,9 @@ uint32_t motorPowerM2;
 uint32_t motorPowerM1;
 uint32_t motorPowerM3;
 
-float lastAltitude;
-float lastAltitudeError_i;
-
 static bool isInit;
 
-static void stabilizerAltHoldUpdate(float accWZ);
+static void stabilizerAltHoldUpdate();
 static void distributePower(const uint16_t thrust, const int16_t roll, const int16_t pitch,
 		const int16_t yaw);
 static uint16_t limitThrust(int32_t value);
@@ -203,7 +201,7 @@ static void stabilizerTask(void* param) {
 
 			// 100HZ
 			if (imuHasBarometer() && (++altHoldCounter >= ALTHOLD_UPDATE_RATE_DIVIDER)) {
-				stabilizerAltHoldUpdate(accWZ);
+				stabilizerAltHoldUpdate();
 				altHoldCounter = 0;
 			}
 
@@ -249,16 +247,12 @@ static void stabilizerTask(void* param) {
 	}
 }
 
-static void stabilizerAltHoldUpdate(float accWZ) {
+static void stabilizerAltHoldUpdate() {
 	// Get the time
-	static uint32_t lastTime = 0;
-	uint32_t currentTime = 0;
-	static float altitudeError = 0;
+	float altitudeError = 0;
 	static float altitudeError_i = 0;
-	uint32_t dt = 0;
-	static float instAcceleration = 0;
-	static float delta = 0;
-	static float estimatedVelocity = 0;
+	float instAcceleration = 0;
+	float deltaVertSpeed = 0;
 
 	// Get altitude hold commands from pilot
 	commanderGetAltHold(&altHold, &setAltHold, &altHoldChange);
@@ -266,27 +260,21 @@ static void stabilizerAltHoldUpdate(float accWZ) {
 	// Get barometer height estimates
 	//TODO do the smoothing within getData
 	ms5611GetData(&pressure, &temperature, &aslRaw);
-//	estimatedAltitude = estimatedAltitude * aslAlpha + aslRaw * (1 - aslAlpha);
-//	aslLong = aslLong * aslAlphaLong + aslRaw * (1 - aslAlphaLong);
-
-	currentTime = xTaskGetTickCount();
 
 	// Compute the altitude
-	altitudeError = aslRaw - lastAltitude;
-	altitudeError_i = fmin(2500.0, fmax(-2500.0, lastAltitudeError_i + altitudeError));
+	altitudeError = aslRaw - estimatedAltitude;
+	altitudeError_i = fmin(50.0, fmax(-50.0, altitudeError_i + altitudeError));
 
-	instAcceleration = accWZ * 9.80665 + altitudeError_i * KI;
-	dt = currentTime - lastTime;
+	instAcceleration = accWZ * 9.80665 + altitudeError_i * altEstKi;
 
-	delta = instAcceleration * dt + (KP1 * dt) * altitudeError;
-    estimatedAltitude += (estimatedVelocity / 5.0 + delta) * (dt / 2) + (KP2 * dt) * altitudeError;
-	estimatedVelocity += delta * 10.0;
+	deltaVertSpeed = instAcceleration * ALTHOLD_UPDATE_DT + (altEstKp1 * ALTHOLD_UPDATE_DT) * altitudeError;
+    estimatedAltitude += (vSpeedComp * 2.0 + deltaVertSpeed) * (ALTHOLD_UPDATE_DT / 2) + (altEstKp2 * ALTHOLD_UPDATE_DT) * altitudeError;
+    vSpeedComp += deltaVertSpeed;
 
-	lastTime = currentTime;
 	aslLong = estimatedAltitude;		// Override aslLong
 
 	// Estimate vertical speed based on Acc - fused with baro to reduce drift
-	vSpeed = constrain(estimatedVelocity, -vSpeedLimit, vSpeedLimit);
+	vSpeedComp = constrain(vSpeedComp, -vSpeedLimit, vSpeedLimit);
 
 	// Reset Integral gain of PID controller if being charged
 	if (!pmIsDischarging()) {
@@ -416,38 +404,43 @@ LOG_ADD(LOG_INT32, m3, &motorPowerM3)
 LOG_GROUP_STOP(motor)
 
 // LOG altitude hold PID controller states
-LOG_GROUP_START(vpid) LOG_ADD(LOG_FLOAT, pid, &altHoldPID)
+LOG_GROUP_START(vpid)
+LOG_ADD(LOG_FLOAT, pid, &altHoldPID)
 LOG_ADD(LOG_FLOAT, p, &altHoldPID.outP)
 LOG_ADD(LOG_FLOAT, i, &altHoldPID.outI)
 LOG_ADD(LOG_FLOAT, d, &altHoldPID.outD)
 LOG_GROUP_STOP(vpid)
 
-LOG_GROUP_START(baro) LOG_ADD(LOG_FLOAT, estimatedAltitude, &estimatedAltitude)
+LOG_GROUP_START(baro)
+LOG_ADD(LOG_FLOAT, estimatedAltitude, &estimatedAltitude)
 LOG_ADD(LOG_FLOAT, aslRaw, &aslRaw)
 LOG_ADD(LOG_FLOAT, aslLong, &aslLong)
 LOG_ADD(LOG_FLOAT, temp, &temperature)
 LOG_ADD(LOG_FLOAT, pressure, &pressure)
 LOG_GROUP_STOP(baro)
 
-LOG_GROUP_START(altHold) LOG_ADD(LOG_FLOAT, err, &altHoldErr)
+LOG_GROUP_START(altHold)
+LOG_ADD(LOG_FLOAT, err, &altHoldErr)
 LOG_ADD(LOG_FLOAT, target, &altHoldTarget)
 LOG_ADD(LOG_FLOAT, zSpeed, &vSpeed)
 LOG_ADD(LOG_FLOAT, vSpeed, &vSpeed)
+LOG_ADD(LOG_FLOAT, vSpeedComp, &vSpeedComp)
 LOG_GROUP_STOP(altHold)
 
 // Params for altitude hold
-PARAM_GROUP_START(altHold) PARAM_ADD(PARAM_FLOAT, aslAlpha, &aslAlpha)
-PARAM_ADD(PARAM_FLOAT, aslAlphaLong, &aslAlphaLong)
+PARAM_GROUP_START(altHold)
 PARAM_ADD(PARAM_FLOAT, errDeadband, &errDeadband)
 PARAM_ADD(PARAM_FLOAT, altHoldChangeSens, &altHoldChange_SENS)
 PARAM_ADD(PARAM_FLOAT, altHoldErrMax, &altHoldErrMax)
+PARAM_ADD(PARAM_FLOAT, altEstKp1, &altEstKp1)
+PARAM_ADD(PARAM_FLOAT, altEstKp2, &altEstKp2)
+PARAM_ADD(PARAM_FLOAT, altEstKi, &altEstKi)
 PARAM_ADD(PARAM_FLOAT, kd, &altHoldKd)
 PARAM_ADD(PARAM_FLOAT, ki, &altHoldKi)
 PARAM_ADD(PARAM_FLOAT, kp, &altHoldKp)
 PARAM_ADD(PARAM_FLOAT, pidAlpha, &pidAlpha)
 PARAM_ADD(PARAM_FLOAT, pidAslFac, &pidAslFac)
 PARAM_ADD(PARAM_FLOAT, vAccDeadband, &vAccDeadband)
-PARAM_ADD(PARAM_FLOAT, vBiasAlpha, &vBiasAlpha)
 PARAM_ADD(PARAM_FLOAT, vSpeedASLDeadband, &vSpeedASLDeadband)
 PARAM_ADD(PARAM_FLOAT, vSpeedLimit, &vSpeedLimit)
 PARAM_ADD(PARAM_UINT16, baseThrust, &altHoldBaseThrust)

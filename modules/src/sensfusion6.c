@@ -255,7 +255,7 @@ float sensfusion6GetAccZWithoutGravity(const float ax, const float ay, const flo
 
   // return vertical acceleration without gravity
   // (A dot G) / |G| - 1G (|G| = 1) -> (A dot G) - 1G
-  return ((ax*gx + ay*gy + az*gz) - 1.0);
+  return ((ax*gx + ay*gy + az*gz) - 1.068);
 }
 //---------------------------------------------------------------------------------------------------
 // Fast inverse square-root
