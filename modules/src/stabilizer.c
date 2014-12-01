@@ -59,6 +59,10 @@
 #define ALTHOLD_UPDATE_RATE_DIVIDER  5 // 500hz/5 = 100hz for barometer measurements
 #define ALTHOLD_UPDATE_DT  (float)(1.0 / (IMU_UPDATE_FREQ / ALTHOLD_UPDATE_RATE_DIVIDER))   // 500hz
 
+#define KP1	(0.55)	//PI Observer velocity gain
+#define KP2	(1.0)	//PI Observer position gain
+#define KI	(0.001)	//PI Observer integral gain (bias cancellation)
+
 static Axis3f gyro; // Gyro axis data in deg/s
 static Axis3f acc;  // Accelerometer axis data in mG
 static Axis3f mag;  // Magnetometer axis data in testla
@@ -130,9 +134,12 @@ uint32_t motorPowerM2;
 uint32_t motorPowerM1;
 uint32_t motorPowerM3;
 
+float lastAltitude;
+float lastAltitudeError_i;
+
 static bool isInit;
 
-static void stabilizerAltHoldUpdate(void);
+static void stabilizerAltHoldUpdate(float accWZ);
 static void distributePower(const uint16_t thrust, const int16_t roll,
                             const int16_t pitch, const int16_t yaw);
 static uint16_t limitThrust(int32_t value);
@@ -217,7 +224,7 @@ static void stabilizerTask(void* param)
       // 100HZ
       if (imuHasBarometer() && (++altHoldCounter >= ALTHOLD_UPDATE_RATE_DIVIDER))
       {
-        stabilizerAltHoldUpdate();
+        stabilizerAltHoldUpdate(accWZ);
         altHoldCounter = 0;
       }
 
@@ -272,8 +279,19 @@ static void stabilizerTask(void* param)
   }
 }
 
-static void stabilizerAltHoldUpdate(void)
+static void stabilizerAltHoldUpdate(float accWZ)
 {
+  // Get the time
+  static uint32_t lastTime = 0;
+  static uint32_t currentTime = 0;
+  static float altitudeError = 0;
+  static float altitudeError_i = 0;
+  static uint32_t dt = 0;
+  static float instAcceleration = 0;
+  static float delta = 0;
+  static float estimatedAltitude = 0;
+  static float estimatedVelocity = 0;
+
   // Get altitude hold commands from pilot
   commanderGetAltHold(&altHold, &setAltHold, &altHoldChange);
 
@@ -282,6 +300,23 @@ static void stabilizerAltHoldUpdate(void)
   ms5611GetData(&pressure, &temperature, &aslRaw);
   asl = asl * aslAlpha + aslRaw * (1 - aslAlpha);
   aslLong = aslLong * aslAlphaLong + aslRaw * (1 - aslAlphaLong);
+
+  // Compute the altitude
+  altitudeError = lastAltitude - aslRaw;
+  altitudeError_i = lastAltitudeError_i + altitudeError;
+  altitudeError_i = fmin(2500.0, fmax(-2500.0, altitudeError_i));
+
+  instAcceleration = accWZ * 9.80665 + altitudeError_i * KI;
+  currentTime = xTaskGetTickCount();
+  dt = currentTime - lastTime;
+
+  delta = instAcceleration * dt + (KP1 * dt) * altitudeError;
+  estimatedAltitude += (estimatedVelocity/5.0 + delta) * (dt / 2) + (KP2 * dt) * altitudeError;
+  estimatedVelocity += delta * 10.0;
+
+  lastTime = currentTime;
+  asl = estimatedVelocity;	// Override asl
+  aslLong = asl;		// Override aslLong
 
   // Estimate vertical speed based on successive barometer readings. This is ugly :)
   vSpeedASL = deadband(asl - aslLong, vSpeedASLDeadband);
