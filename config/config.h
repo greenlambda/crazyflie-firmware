@@ -57,7 +57,7 @@
 #define T_LAUNCH_MULTICONTROL
 
 //The radio channel. From 0 to 125
-#define RADIO_CHANEL 10
+#define RADIO_CHANEL 23
 #define RADIO_DATARATE RADIO_RATE_250K
 
 #define ACTIVATE_AUTO_SHUTDOWN
