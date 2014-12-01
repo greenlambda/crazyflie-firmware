@@ -71,7 +71,7 @@ static float yawRateDesired;
 // Baro variables
 static float temperature; // temp from barometer
 static float pressure;    // pressure from barometer
-static float asl;     // smoothed asl
+static float estimatedAltitude;     // smoothed asl
 static float aslRaw;  // raw asl
 static float aslLong; // long term asl
 
@@ -258,7 +258,6 @@ static void stabilizerAltHoldUpdate(float accWZ) {
 	uint32_t dt = 0;
 	static float instAcceleration = 0;
 	static float delta = 0;
-	static float estimatedAltitude = 0;
 	static float estimatedVelocity = 0;
 
 	// Get altitude hold commands from pilot
@@ -267,25 +266,24 @@ static void stabilizerAltHoldUpdate(float accWZ) {
 	// Get barometer height estimates
 	//TODO do the smoothing within getData
 	ms5611GetData(&pressure, &temperature, &aslRaw);
-	asl = asl * aslAlpha + aslRaw * (1 - aslAlpha);
-	aslLong = aslLong * aslAlphaLong + aslRaw * (1 - aslAlphaLong);
+//	estimatedAltitude = estimatedAltitude * aslAlpha + aslRaw * (1 - aslAlpha);
+//	aslLong = aslLong * aslAlphaLong + aslRaw * (1 - aslAlphaLong);
 
 	currentTime = xTaskGetTickCount();
 
 	// Compute the altitude
-	altitudeError = aslLong - lastAltitude;
+	altitudeError = aslRaw - lastAltitude;
 	altitudeError_i = fmin(2500.0, fmax(-2500.0, lastAltitudeError_i + altitudeError));
 
 	instAcceleration = accWZ * 9.80665 + altitudeError_i * KI;
 	dt = currentTime - lastTime;
 
 	delta = instAcceleration * dt + (KP1 * dt) * altitudeError;
-	estimatedAltitude += (estimatedVelocity / 5.0 + delta) * (dt / 2) + (KP2 * dt) * altitudeError;
+    estimatedAltitude += (estimatedVelocity / 5.0 + delta) * (dt / 2) + (KP2 * dt) * altitudeError;
 	estimatedVelocity += delta * 10.0;
 
 	lastTime = currentTime;
-	asl = estimatedAltitude;	// Override asl
-	aslLong = asl;		// Override aslLong
+	aslLong = estimatedAltitude;		// Override aslLong
 
 	// Estimate vertical speed based on Acc - fused with baro to reduce drift
 	vSpeed = constrain(estimatedVelocity, -vSpeedLimit, vSpeedLimit);
@@ -298,13 +296,13 @@ static void stabilizerAltHoldUpdate(float accWZ) {
 	// Altitude hold mode just activated, set target altitude as current altitude. Reuse previous integral term as a starting point
 	if (setAltHold) {
 		// Set to current altitude
-		altHoldTarget = asl;
+		altHoldTarget = estimatedAltitude;
 
 		// Cache last integral term for reuse after pid init
 		const float pre_integral = altHoldPID.integ;
 
 		// Reset PID controller
-		pidInit(&altHoldPID, asl, altHoldKp, altHoldKi, altHoldKd, ALTHOLD_UPDATE_DT);
+		pidInit(&altHoldPID, estimatedAltitude, altHoldKp, altHoldKi, altHoldKd, ALTHOLD_UPDATE_DT);
 		// TODO set low and high limits depending on voltage
 		// TODO for now just use previous I value and manually set limits for whole voltage range
 		//                    pidSetIntegralLimit(&altHoldPID, 12345);
@@ -313,7 +311,7 @@ static void stabilizerAltHoldUpdate(float accWZ) {
 		altHoldPID.integ = pre_integral;
 
 		// Reset altHoldPID
-		altHoldPIDVal = pidUpdate(&altHoldPID, asl, false);
+		altHoldPIDVal = pidUpdate(&altHoldPID, estimatedAltitude, false);
 	}
 
 	// In altitude hold mode
@@ -323,16 +321,15 @@ static void stabilizerAltHoldUpdate(float accWZ) {
 		pidSetDesired(&altHoldPID, altHoldTarget);
 
 		// Compute error (current - target), limit the error
-		altHoldErr = constrain(deadband(asl - altHoldTarget, errDeadband), -altHoldErrMax, altHoldErrMax);
+		altHoldErr = constrain(deadband(estimatedAltitude - altHoldTarget, errDeadband), -altHoldErrMax, altHoldErrMax);
 		pidSetError(&altHoldPID, -altHoldErr);
 
 		// Get control from PID controller, dont update the error (done above)
-		altHoldPIDVal = pidUpdate(&altHoldPID, asl, false);
+		altHoldPIDVal = pidUpdate(&altHoldPID, estimatedAltitude, false);
 
 		// compute new thrust
-		actuatorThrust =
-				max(altHoldMinThrust,
-						min(altHoldMaxThrust, limitThrust( altHoldBaseThrust + (int32_t)(altHoldPIDVal*pidAslFac))));
+		actuatorThrust = max(altHoldMinThrust,
+			min(altHoldMaxThrust, limitThrust( altHoldBaseThrust + (int32_t)(altHoldPIDVal*pidAslFac))));
 
 		// i part should compensate for voltage drop
 	} else {
@@ -425,7 +422,7 @@ LOG_ADD(LOG_FLOAT, i, &altHoldPID.outI)
 LOG_ADD(LOG_FLOAT, d, &altHoldPID.outD)
 LOG_GROUP_STOP(vpid)
 
-LOG_GROUP_START(baro) LOG_ADD(LOG_FLOAT, asl, &asl)
+LOG_GROUP_START(baro) LOG_ADD(LOG_FLOAT, estimatedAltitude, &estimatedAltitude)
 LOG_ADD(LOG_FLOAT, aslRaw, &aslRaw)
 LOG_ADD(LOG_FLOAT, aslLong, &aslLong)
 LOG_ADD(LOG_FLOAT, temp, &temperature)
