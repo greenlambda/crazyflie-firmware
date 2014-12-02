@@ -83,16 +83,23 @@ static float accWZ = 0.0;
 static float accMAG = 0.0;
 static float vSpeed = 0.0; // Vertical speed (world frame) integrated from vertical acceleration
 static float vSpeedComp = 0.0; // Compensated vertical (world frame) speed with controller
-static float altHoldPIDVal;                    // Output of the PID controller
 static float altHoldErr;                       // Different between target and current altitude
 
+static PidObject hoverPID; // Used for hovering. I Reset on battery change status
+
+
 // Altitude hold & Baro Params
-static float altEstKp1 = 0.55; //PI Observer velocity gain
+static float altEstKp1 = 0.45; //PI Observer velocity gain
 static float altEstKp2 = 1.0;  //PI Observer positional gain
 static float altEstKi  = 0.001; //PI Observer integral gain (bias cancellation)
-static float altHoldKp = 0.5; // PID gain constants, used everytime we reinitialise the PID controller
-static float altHoldKi = 0.18;
+// PID gain constants, used every time we reinitialize the PID controller
+static float altHoldKp = 1.0;
+static float altHoldKi = 0.0;
 static float altHoldKd = 0.0;
+// Hover PID parameters
+static float hoverKp = 0.1;
+static float hoverKi = 0.18;
+static float hoverKd = 0.1;
 static float altHoldChange = 0;     // Change in target altitude
 static float altHoldTarget = -1;    // Target altitude
 static float altHoldErrMax = 1.0; // max cap on current estimated altitude vs target altitude in meters
@@ -265,7 +272,7 @@ static void stabilizerAltHoldUpdate() {
 	altitudeError = aslRaw - estimatedAltitude;
 	altitudeError_i = fmin(50.0, fmax(-50.0, altitudeError_i + altitudeError));
 
-	instAcceleration = accWZ * 9.80665 + altitudeError_i * altEstKi;
+	instAcceleration = deadband(accWZ, vAccDeadband) * 9.80665 + altitudeError_i * altEstKi;
 
 	deltaVertSpeed = instAcceleration * ALTHOLD_UPDATE_DT + (altEstKp1 * ALTHOLD_UPDATE_DT) * altitudeError;
     estimatedAltitude += (vSpeedComp * 2.0 + deltaVertSpeed) * (ALTHOLD_UPDATE_DT / 2) + (altEstKp2 * ALTHOLD_UPDATE_DT) * altitudeError;
@@ -286,20 +293,23 @@ static void stabilizerAltHoldUpdate() {
 		// Set to current altitude
 		altHoldTarget = estimatedAltitude;
 
-		// Cache last integral term for reuse after pid init
-		const float pre_integral = altHoldPID.integ;
 
 		// Reset PID controller
 		pidInit(&altHoldPID, estimatedAltitude, altHoldKp, altHoldKi, altHoldKd, ALTHOLD_UPDATE_DT);
+
+		// Cache last integral term for reuse after pid init
+		// const float pre_integral = hoverPID.integ;
+
+		// Reset the PID controller for the hover controller. We want zero vertical velocity
+		pidInit(&hoverPID, 0, hoverKp, hoverKi, hoverKd, ALTHOLD_UPDATE_DT);
+		pidSetIntegralLimit(&hoverPID, 3);
 		// TODO set low and high limits depending on voltage
 		// TODO for now just use previous I value and manually set limits for whole voltage range
 		//                    pidSetIntegralLimit(&altHoldPID, 12345);
 		//                    pidSetIntegralLimitLow(&altHoldPID, 12345);              /
 
-		altHoldPID.integ = pre_integral;
 
-		// Reset altHoldPID
-		altHoldPIDVal = pidUpdate(&altHoldPID, estimatedAltitude, false);
+		// hoverPID.integ = pre_integral;
 	}
 
 	// In altitude hold mode
@@ -313,17 +323,23 @@ static void stabilizerAltHoldUpdate() {
 		pidSetError(&altHoldPID, -altHoldErr);
 
 		// Get control from PID controller, dont update the error (done above)
-		altHoldPIDVal = pidUpdate(&altHoldPID, estimatedAltitude, false);
+		float altHoldPIDVal = pidUpdate(&altHoldPID, estimatedAltitude, false);
+
+		// Get the PID value for the hover
+		float hoverPIDVal = pidUpdate(&hoverPID, vSpeedComp, true);
+
+		// Compute the mixture between the alt hold and the hover PID
+		float thrustValFloat = 0.5*hoverPIDVal + 0.5*altHoldPIDVal;
+		// float thrustVal = 0.5*hoverPIDVal + 0.5*altHoldPIDVal;
+		uint32_t thrustVal = altHoldBaseThrust + (int32_t)(thrustValFloat*pidAslFac);
 
 		// compute new thrust
-		actuatorThrust = max(altHoldMinThrust,
-			min(altHoldMaxThrust, limitThrust( altHoldBaseThrust + (int32_t)(altHoldPIDVal*pidAslFac))));
+		actuatorThrust = max(altHoldMinThrust, min(altHoldMaxThrust, limitThrust( thrustVal )));
 
 		// i part should compensate for voltage drop
 	} else {
 		altHoldTarget = 0.0;
 		altHoldErr = 0.0;
-		altHoldPIDVal = 0.0;
 	}
 }
 
@@ -438,6 +454,9 @@ PARAM_ADD(PARAM_FLOAT, altEstKi, &altEstKi)
 PARAM_ADD(PARAM_FLOAT, kd, &altHoldKd)
 PARAM_ADD(PARAM_FLOAT, ki, &altHoldKi)
 PARAM_ADD(PARAM_FLOAT, kp, &altHoldKp)
+PARAM_ADD(PARAM_FLOAT, hoverKd, &hoverKd)
+PARAM_ADD(PARAM_FLOAT, hoverKi, &hoverKi)
+PARAM_ADD(PARAM_FLOAT, hoverKp, &hoverKp)
 PARAM_ADD(PARAM_FLOAT, pidAlpha, &pidAlpha)
 PARAM_ADD(PARAM_FLOAT, pidAslFac, &pidAslFac)
 PARAM_ADD(PARAM_FLOAT, vAccDeadband, &vAccDeadband)
