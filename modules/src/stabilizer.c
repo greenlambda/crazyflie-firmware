@@ -53,8 +53,11 @@
  * control loop run relative the rate control loop.
  */
 #define ATTITUDE_UPDATE_RATE_DIVIDER  2
-#define FUSION_UPDATE_DT  (float)(1.0 / (IMU_UPDATE_FREQ / ATTITUDE_UPDATE_RATE_DIVIDER)) // 250hz// Barometer/ Altitude hold stuff
-#define ALTHOLD_UPDATE_RATE_DIVIDER  5 // 500hz/5 = 100hz for barometer measurements#define ALTHOLD_UPDATE_DT  (float)(1.0 / (IMU_UPDATE_FREQ / ALTHOLD_UPDATE_RATE_DIVIDER))   // 500hzstatic Axis3f gyro; // Gyro axis data in deg/s
+#define FUSION_UPDATE_DT  (float)(1.0 / (IMU_UPDATE_FREQ / ATTITUDE_UPDATE_RATE_DIVIDER)) // 250hz
+// Barometer/ Altitude hold stuff
+#define ALTHOLD_UPDATE_RATE_DIVIDER  5 // 500hz/5 = 100hz for barometer measurements
+#define ALTHOLD_UPDATE_DT  (float)(1.0 / (IMU_UPDATE_FREQ / ALTHOLD_UPDATE_RATE_DIVIDER))   // 500hz
+static Axis3f gyro; // Gyro axis data in deg/s
 static Axis3f acc;  // Accelerometer axis data in mG
 static Axis3f mag;  // Magnetometer axis data in testla
 
@@ -260,6 +263,9 @@ static void stabilizerAltHoldUpdate() {
 	static float altitudeError_i = 0;
 	float instAcceleration = 0;
 	float deltaVertSpeed = 0;
+	static uint32_t timeStart = 0;
+	static uint32_t timeCurrent = 0;
+
 
 	// Get altitude hold commands from pilot
 	commanderGetAltHold(&altHold, &setAltHold, &altHoldChange);
@@ -293,6 +299,9 @@ static void stabilizerAltHoldUpdate() {
 		// Set to current altitude
 		altHoldTarget = estimatedAltitude;
 
+		// Set the start time
+		timeStart = xTaskGetTickCount();
+		timeCurrent = 0;
 
 		// Reset PID controller
 		pidInit(&altHoldPID, estimatedAltitude, altHoldKp, altHoldKi, altHoldKd, ALTHOLD_UPDATE_DT);
@@ -314,6 +323,9 @@ static void stabilizerAltHoldUpdate() {
 
 	// In altitude hold mode
 	if (altHold) {
+		// Get current time
+		timeCurrent = xTaskGetTickCount();
+
 		// Update target altitude from joy controller input
 		altHoldTarget += altHoldChange / altHoldChange_SENS;
 		pidSetDesired(&altHoldPID, altHoldTarget);
@@ -328,8 +340,16 @@ static void stabilizerAltHoldUpdate() {
 		// Get the PID value for the hover
 		float hoverPIDVal = pidUpdate(&hoverPID, vSpeedComp, true);
 
-		// Compute the mixture between the alt hold and the hover PID
-		float thrustValFloat = 0.5*hoverPIDVal + 0.5*altHoldPIDVal;
+		float thrustValFloat;
+
+		// Use different weights depending on time into altHold mode
+		if (timeCurrent > 150) {
+			// Compute the mixture between the alt hold and the hover PID
+			thrustValFloat = 0.5*hoverPIDVal + 0.5*altHoldPIDVal;
+		} else {
+			// Compute the mixture between the alt hold and the hover PID
+			thrustValFloat = 0.1*hoverPIDVal + 0.9*altHoldPIDVal;
+		}
 		// float thrustVal = 0.5*hoverPIDVal + 0.5*altHoldPIDVal;
 		uint32_t thrustVal = altHoldBaseThrust + (int32_t)(thrustValFloat*pidAslFac);
 
@@ -352,7 +372,9 @@ static void distributePower(const uint16_t thrust, const int16_t roll, const int
 	motorPowerM2 = limitThrust(thrust - roll - pitch - yaw);
 	motorPowerM3 = limitThrust(thrust + roll - pitch + yaw);
 	motorPowerM4 = limitThrust(thrust + roll + pitch - yaw);
-#else // QUAD_FORMATION_NORMAL	motorPowerM1 = limitThrust(thrust + pitch + yaw);	motorPowerM2 = limitThrust(thrust - roll - yaw);
+#else // QUAD_FORMATION_NORMAL
+	motorPowerM1 = limitThrust(thrust + pitch + yaw);
+	motorPowerM2 = limitThrust(thrust - roll - yaw);
 	motorPowerM3 = limitThrust(thrust - pitch + yaw);
 	motorPowerM4 = limitThrust(thrust + roll - yaw);
 #endif
