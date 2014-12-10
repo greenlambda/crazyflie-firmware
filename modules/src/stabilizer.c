@@ -105,11 +105,11 @@ static float hoverKi = 0.18;
 static float hoverKd = 0.1;
 static float altHoldChange = 0;     // Change in target altitude
 static float altHoldTarget = -1;    // Target altitude
+static float altHoldTargetOffset = 0;   // Python accessible target offset up
 static float altHoldErrMax = 1.0; // max cap on current estimated altitude vs target altitude in meters
 static float altHoldChange_SENS = 200; // sensitivity of target altitude change (thrust input control) while hovering. Lower = more sensitive & faster changes
 static float pidAslFac = 13000; // relates meters asl to thrust
 static float vAccDeadband = 0.07;  // Vertical acceleration deadband
-static float vSpeedASLDeadband = 0.005; // Vertical speed based on barometer readings deadband
 static float vSpeedLimit = 5.0;  // (m/s) used to constrain vertical velocity
 static float errDeadband = 0.00;  // error (target - altitude) deadband
 static uint16_t altHoldMinThrust = 00000; // minimum hover thrust - not used yet
@@ -301,10 +301,6 @@ static void stabilizerAltHoldUpdate() {
 		// Set to current altitude
 		altHoldTarget = estimatedAltitude;
 
-		// Set the start time
-		//timeStart = xTaskGetTickCount();
-		//timeCurrent = 0;
-
 		// Reset PID controller
 		pidInit(&altHoldPID, estimatedAltitude, altHoldKp, altHoldKi, altHoldKd, ALTHOLD_UPDATE_DT);
 
@@ -325,12 +321,9 @@ static void stabilizerAltHoldUpdate() {
 
 	// In altitude hold mode
 	if (altHold) {
-		// Get current time
-		//timeCurrent = xTaskGetTickCount();
-
 		// Update target altitude from joy controller input
 		altHoldTarget += altHoldChange / altHoldChange_SENS;
-		pidSetDesired(&altHoldPID, altHoldTarget);
+		pidSetDesired(&altHoldPID, altHoldTarget+altHoldTargetOffset);
 
 		// Compute error (current - target), limit the error
 		altHoldErr = constrain(deadband(estimatedAltitude - altHoldTarget, errDeadband), -altHoldErrMax, altHoldErrMax);
@@ -483,9 +476,9 @@ PARAM_ADD(PARAM_FLOAT, hoverKi, &hoverKi)
 PARAM_ADD(PARAM_FLOAT, hoverKp, &hoverKp)
 PARAM_ADD(PARAM_FLOAT, pidAslFac, &pidAslFac)
 PARAM_ADD(PARAM_FLOAT, vAccDeadband, &vAccDeadband)
-PARAM_ADD(PARAM_FLOAT, vSpeedASLDeadband, &vSpeedASLDeadband)
 PARAM_ADD(PARAM_FLOAT, vSpeedLimit, &vSpeedLimit)
 PARAM_ADD(PARAM_FLOAT, altHoverAlpha, &hoverAlpha)
+PARAM_ADD(PARAM_FLOAT, altHoldTargOff, &altHoldTargetOffset)
 PARAM_ADD(PARAM_UINT16, baseThrust, &altHoldBaseThrust)
 PARAM_ADD(PARAM_UINT16, maxThrust, &altHoldMaxThrust)
 PARAM_ADD(PARAM_UINT16, minThrust, &altHoldMinThrust)
