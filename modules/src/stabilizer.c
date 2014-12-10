@@ -326,7 +326,7 @@ static void stabilizerAltHoldUpdate() {
 		pidSetDesired(&altHoldPID, altHoldTarget+altHoldTargetOffset);
 
 		// Compute error (current - target), limit the error
-		altHoldErr = constrain(deadband(estimatedAltitude - altHoldTarget, errDeadband), -altHoldErrMax, altHoldErrMax);
+		altHoldErr = constrain(deadband(estimatedAltitude - (altHoldTarget+altHoldTargetOffset), errDeadband), -altHoldErrMax, altHoldErrMax);
 		pidSetError(&altHoldPID, -altHoldErr);
 
 		// Get control from PID controller, dont update the error (done above)
