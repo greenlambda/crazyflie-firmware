@@ -94,7 +94,7 @@ static PidObject hoverPID; // Used for hovering. I Reset on battery change statu
 // Altitude hold & Baro Params
 static float altEstKp1 = 0.45; //PI Observer velocity gain
 static float altEstKp2 = 1.0;  //PI Observer positional gain
-static float altEstKi  = 0.001; //PI Observer integral gain (bias cancellation)
+static float altEstKi  = 0.0001; //PI Observer integral gain (bias cancellation)
 // PID gain constants, used every time we reinitialize the PID controller
 static float altHoldKp = 1.0;
 static float altHoldKi = 0.0;
@@ -109,7 +109,7 @@ static float altHoldTargetOffset = 0;   // Python accessible target offset up
 static float altHoldErrMax = 1.0; // max cap on current estimated altitude vs target altitude in meters
 static float altHoldChange_SENS = 200; // sensitivity of target altitude change (thrust input control) while hovering. Lower = more sensitive & faster changes
 static float pidAslFac = 13000; // relates meters asl to thrust
-static float vAccDeadband = 0.07;  // Vertical acceleration deadband
+static float vAccDeadband = 0.06;  // Vertical acceleration deadband
 static float vSpeedLimit = 5.0;  // (m/s) used to constrain vertical velocity
 static float errDeadband = 0.00;  // error (target - altitude) deadband
 static uint16_t altHoldMinThrust = 00000; // minimum hover thrust - not used yet
@@ -265,9 +265,6 @@ static void stabilizerAltHoldUpdate() {
 	static float altitudeError_i = 0;
 	float instAcceleration = 0;
 	float deltaVertSpeed = 0;
-	//static uint32_t timeStart = 0;
-	//static uint32_t timeCurrent = 0;
-
 
 	// Get altitude hold commands from pilot
 	commanderGetAltHold(&altHold, &setAltHold, &altHoldChange);
@@ -278,12 +275,14 @@ static void stabilizerAltHoldUpdate() {
 
 	// Compute the altitude
 	altitudeError = aslRaw - estimatedAltitude;
-	altitudeError_i = fmin(50.0, fmax(-50.0, altitudeError_i + altitudeError));
+	altitudeError_i = fmin(5.0, fmax(-5.0, altitudeError_i + altitudeError));
 
+	/* Estimate the instantaneous acceleration by reading the accelerometer and adjusting for altitude error. */
 	instAcceleration = deadband(accWZ, vAccDeadband) * 9.80665 + altitudeError_i * altEstKi;
 
 	deltaVertSpeed = instAcceleration * ALTHOLD_UPDATE_DT + (altEstKp1 * ALTHOLD_UPDATE_DT) * altitudeError;
-    estimatedAltitude += (vSpeedComp * 2.0 + deltaVertSpeed) * (ALTHOLD_UPDATE_DT / 2) + (altEstKp2 * ALTHOLD_UPDATE_DT) * altitudeError;
+	/* Integrate the speed again to get the position (trapezoid rule), adding in the error */
+    estimatedAltitude += (vSpeedComp + deltaVertSpeed / 2.0) * ALTHOLD_UPDATE_DT + (altEstKp2 * ALTHOLD_UPDATE_DT) * altitudeError;
     vSpeedComp += deltaVertSpeed;
 
 	aslLong = estimatedAltitude;		// Override aslLong
@@ -333,7 +332,6 @@ static void stabilizerAltHoldUpdate() {
 		float altHoldPIDVal = pidUpdate(&altHoldPID, estimatedAltitude, false);
 
 		// Get the PID value for the hover
-		//float hoverPIDVal = pidUpdate(&hoverPID, vSpeedComp, true);
 		hoverPIDVal = pidUpdate(&hoverPID, vSpeedComp, true);
 
 		float thrustValFloat;
@@ -341,7 +339,6 @@ static void stabilizerAltHoldUpdate() {
 		// Compute the mixture between the alt hold and the hover PID
 		thrustValFloat = hoverAlpha*hoverPIDVal + (1-hoverAlpha)*altHoldPIDVal;
 
-		// float thrustVal = 0.5*hoverPIDVal + 0.5*altHoldPIDVal;
 		uint32_t thrustVal = altHoldBaseThrust + (int32_t)(thrustValFloat*pidAslFac);
 
 		// compute new thrust
