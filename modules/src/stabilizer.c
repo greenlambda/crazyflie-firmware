@@ -118,7 +118,6 @@ static uint16_t altHoldMaxThrust = 60000; // max altitude hold thrust
 static float altHoldTargetVel = 0.0;	// The target velocity
 static float altHoldVSpeedMax = 1.0;
 
-
 RPYType rollType;
 RPYType pitchType;
 RPYType yawType;
@@ -263,6 +262,7 @@ static void stabilizerAltHoldUpdate() {
 	// Get the time
 	float altitudeError = 0;
 	static float altitudeError_i = 0;
+	static float thrustValLP = 0;
 	float instAcceleration = 0;
 	float deltaVertSpeed = 0;
 
@@ -275,10 +275,10 @@ static void stabilizerAltHoldUpdate() {
 
 	// Compute the altitude
 	altitudeError = aslRaw - estimatedAltitude;
-	altitudeError_i = fmin(5.0, fmax(-5.0, altitudeError_i + altitudeError));
+	altitudeError_i = constrain(altitudeError_i + altitudeError, -2000.0, 2000.0);
 
 	/* Estimate the instantaneous acceleration by reading the accelerometer and adjusting for altitude error. */
-	instAcceleration = deadband(accWZ, vAccDeadband) * 9.80665 + altitudeError_i * altEstKi;
+	instAcceleration = accWZ * 9.80665 + altitudeError_i * altEstKi;
 
 	deltaVertSpeed = instAcceleration * ALTHOLD_UPDATE_DT + (altEstKp1 * ALTHOLD_UPDATE_DT) * altitudeError;
 	/* Integrate the speed again to get the position (trapezoid rule), adding in the error */
@@ -329,13 +329,13 @@ static void stabilizerAltHoldUpdate() {
 
 		// Get the PID value for the hover. We want to feed the alt hold into the velocity.
 		pidSetDesired(&hoverPID, altHoldTargetVel);
-		float thrustValFloat = pidUpdate(&hoverPID, vSpeedComp, true);
+		float thrustValInst = pidUpdate(&hoverPID, vSpeedComp, true);
 
 		// Calculate the integer thrust
-		uint32_t thrustVal = altHoldBaseThrust + (int32_t)(thrustValFloat*pidAslFac);
+		uint32_t thrustValInt = altHoldBaseThrust + (int32_t)(thrustValInst*pidAslFac);
 
 		// compute new thrust
-		actuatorThrust = max(altHoldMinThrust, min(altHoldMaxThrust, limitThrust( thrustVal )));
+		actuatorThrust = max(altHoldMinThrust, min(altHoldMaxThrust, limitThrust( thrustValInt )));
 
 		// i parts should compensate for voltage drop
 	} else {
