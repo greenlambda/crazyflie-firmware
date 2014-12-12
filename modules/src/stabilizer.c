@@ -115,8 +115,8 @@ static float errDeadband = 0.00;  // error (target - altitude) deadband
 static uint16_t altHoldMinThrust = 00000; // minimum hover thrust - not used yet
 static uint16_t altHoldBaseThrust = 43000; // approximate throttle needed when in perfect hover. More weight/older battery can use a higher value
 static uint16_t altHoldMaxThrust = 60000; // max altitude hold thrust
-static float hoverAlpha = 0.5; //Weighting for the hover PID control in phase 2
-static float hoverPIDVal = 0.0;
+static float altHoldTargetVel = 0.0;	// The target velocity
+static float altHoldVSpeedMax = 1.0;
 
 
 RPYType rollType;
@@ -283,6 +283,7 @@ static void stabilizerAltHoldUpdate() {
 	deltaVertSpeed = instAcceleration * ALTHOLD_UPDATE_DT + (altEstKp1 * ALTHOLD_UPDATE_DT) * altitudeError;
 	/* Integrate the speed again to get the position (trapezoid rule), adding in the error */
     estimatedAltitude += (vSpeedComp + deltaVertSpeed / 2.0) * ALTHOLD_UPDATE_DT + (altEstKp2 * ALTHOLD_UPDATE_DT) * altitudeError;
+
     vSpeedComp += deltaVertSpeed;
 
 	aslLong = estimatedAltitude;		// Override aslLong
@@ -303,19 +304,14 @@ static void stabilizerAltHoldUpdate() {
 		// Reset PID controller
 		pidInit(&altHoldPID, estimatedAltitude, altHoldKp, altHoldKi, altHoldKd, ALTHOLD_UPDATE_DT);
 
-		// Cache last integral term for reuse after pid init
-		// const float pre_integral = hoverPID.integ;
-
 		// Reset the PID controller for the hover controller. We want zero vertical velocity
 		pidInit(&hoverPID, 0, hoverKp, hoverKi, hoverKd, ALTHOLD_UPDATE_DT);
+		altHoldTargetVel = 0.0;
 		pidSetIntegralLimit(&hoverPID, 3);
 		// TODO set low and high limits depending on voltage
 		// TODO for now just use previous I value and manually set limits for whole voltage range
 		//                    pidSetIntegralLimit(&altHoldPID, 12345);
 		//                    pidSetIntegralLimitLow(&altHoldPID, 12345);              /
-
-
-		// hoverPID.integ = pre_integral;
 	}
 
 	// In altitude hold mode
@@ -329,22 +325,19 @@ static void stabilizerAltHoldUpdate() {
 		pidSetError(&altHoldPID, -altHoldErr);
 
 		// Get control from PID controller, dont update the error (done above)
-		float altHoldPIDVal = pidUpdate(&altHoldPID, estimatedAltitude, false);
+		altHoldTargetVel = constrain(pidUpdate(&altHoldPID, estimatedAltitude, false), -altHoldVSpeedMax, altHoldVSpeedMax);
 
-		// Get the PID value for the hover
-		hoverPIDVal = pidUpdate(&hoverPID, vSpeedComp, true);
+		// Get the PID value for the hover. We want to feed the alt hold into the velocity.
+		pidSetDesired(&hoverPID, altHoldTargetVel);
+		float thrustValFloat = pidUpdate(&hoverPID, vSpeedComp, true);
 
-		float thrustValFloat;
-
-		// Compute the mixture between the alt hold and the hover PID
-		thrustValFloat = hoverAlpha*hoverPIDVal + (1-hoverAlpha)*altHoldPIDVal;
-
+		// Calculate the integer thrust
 		uint32_t thrustVal = altHoldBaseThrust + (int32_t)(thrustValFloat*pidAslFac);
 
 		// compute new thrust
 		actuatorThrust = max(altHoldMinThrust, min(altHoldMaxThrust, limitThrust( thrustVal )));
 
-		// i part should compensate for voltage drop
+		// i parts should compensate for voltage drop
 	} else {
 		altHoldTarget = 0.0;
 		altHoldErr = 0.0;
@@ -437,10 +430,6 @@ LOG_ADD(LOG_FLOAT, i, &altHoldPID.outI)
 LOG_ADD(LOG_FLOAT, d, &altHoldPID.outD)
 LOG_GROUP_STOP(vpid)
 
-LOG_GROUP_START(hpid)
-LOG_ADD(LOG_FLOAT, pid, &hoverPIDVal)
-LOG_GROUP_STOP(hpid)
-
 LOG_GROUP_START(baro)
 LOG_ADD(LOG_FLOAT, estimatedAltitude, &estimatedAltitude)
 LOG_ADD(LOG_FLOAT, aslRaw, &aslRaw)
@@ -452,6 +441,7 @@ LOG_GROUP_STOP(baro)
 LOG_GROUP_START(altHold)
 LOG_ADD(LOG_FLOAT, err, &altHoldErr)
 LOG_ADD(LOG_FLOAT, target, &altHoldTarget)
+LOG_ADD(LOG_FLOAT, targetVel, &altHoldTargetVel)
 LOG_ADD(LOG_FLOAT, zSpeed, &vSpeed)
 LOG_ADD(LOG_FLOAT, vSpeed, &vSpeed)
 LOG_ADD(LOG_FLOAT, vSpeedComp, &vSpeedComp)
@@ -471,12 +461,13 @@ PARAM_ADD(PARAM_FLOAT, kp, &altHoldKp)
 PARAM_ADD(PARAM_FLOAT, hoverKd, &hoverKd)
 PARAM_ADD(PARAM_FLOAT, hoverKi, &hoverKi)
 PARAM_ADD(PARAM_FLOAT, hoverKp, &hoverKp)
+PARAM_ADD(PARAM_FLOAT, vSpeedMax, &altHoldVSpeedMax)
 PARAM_ADD(PARAM_FLOAT, pidAslFac, &pidAslFac)
 PARAM_ADD(PARAM_FLOAT, vAccDeadband, &vAccDeadband)
 PARAM_ADD(PARAM_FLOAT, vSpeedLimit, &vSpeedLimit)
-PARAM_ADD(PARAM_FLOAT, altHoverAlpha, &hoverAlpha)
 PARAM_ADD(PARAM_FLOAT, altHoldTargOff, &altHoldTargetOffset)
 PARAM_ADD(PARAM_UINT16, baseThrust, &altHoldBaseThrust)
 PARAM_ADD(PARAM_UINT16, maxThrust, &altHoldMaxThrust)
 PARAM_ADD(PARAM_UINT16, minThrust, &altHoldMinThrust)
 PARAM_GROUP_STOP(altHold)
+
