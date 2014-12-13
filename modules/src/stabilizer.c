@@ -303,9 +303,6 @@ static void stabilizerAltHoldUpdate() {
 		// Reset PID controller
 		pidInit(&altHoldPID, estimatedAltitude, altHoldKp, altHoldKi, altHoldKd, ALTHOLD_UPDATE_DT);
 
-		// Cache last integral term for reuse after pid init
-		// const float pre_integral = hoverPID.integ;
-
 		// Reset the PID controller for the hover controller. We want zero vertical velocity
 		pidInit(&hoverPID, 0, hoverKp, hoverKi, hoverKd, ALTHOLD_UPDATE_DT);
 		pidSetIntegralLimit(&hoverPID, 3);
@@ -313,9 +310,6 @@ static void stabilizerAltHoldUpdate() {
 		// TODO for now just use previous I value and manually set limits for whole voltage range
 		//                    pidSetIntegralLimit(&altHoldPID, 12345);
 		//                    pidSetIntegralLimitLow(&altHoldPID, 12345);              /
-
-
-		// hoverPID.integ = pre_integral;
 	}
 
 	// In altitude hold mode
