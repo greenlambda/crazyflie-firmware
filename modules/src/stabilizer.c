@@ -53,11 +53,8 @@
  * control loop run relative the rate control loop.
  */
 #define ATTITUDE_UPDATE_RATE_DIVIDER  2
-#define FUSION_UPDATE_DT  (float)(1.0 / (IMU_UPDATE_FREQ / ATTITUDE_UPDATE_RATE_DIVIDER)) // 250hz
-// Barometer/ Altitude hold stuff
-#define ALTHOLD_UPDATE_RATE_DIVIDER  5 // 500hz/5 = 100hz for barometer measurements
-#define ALTHOLD_UPDATE_DT  (float)(1.0 / (IMU_UPDATE_FREQ / ALTHOLD_UPDATE_RATE_DIVIDER))   // 500hz
-static Axis3f gyro; // Gyro axis data in deg/s
+#define FUSION_UPDATE_DT  (float)(1.0 / (IMU_UPDATE_FREQ / ATTITUDE_UPDATE_RATE_DIVIDER)) // 250hz// Barometer/ Altitude hold stuff
+#define ALTHOLD_UPDATE_RATE_DIVIDER  5 // 500hz/5 = 100hz for barometer measurements#define ALTHOLD_UPDATE_DT  (float)(1.0 / (IMU_UPDATE_FREQ / ALTHOLD_UPDATE_RATE_DIVIDER))   // 500hzstatic Axis3f gyro; // Gyro axis data in deg/s
 static Axis3f acc;  // Accelerometer axis data in mG
 static Axis3f mag;  // Magnetometer axis data in testla
 
@@ -79,22 +76,23 @@ static float aslRaw;  // raw asl
 static float aslLong; // long term asl
 
 // Altitude hold variables
-static PidObject altHoldPID; // Used for altitute hold mode. I gets reset when the bat status changes
+static PidObject altHoldPID; // Used for altitude hold mode. I gets reset when the bat status changes
 bool altHold = false;          // Currently in altitude hold mode
 bool setAltHold = false;      // Hover mode has just been activated
-static float accWZ = 0.0;
-static float accMAG = 0.0;
-static float vSpeed = 0.0; // Vertical speed (world frame) integrated from vertical acceleration
-static float vSpeedComp = 0.0; // Compensated vertical (world frame) speed with controller
+/* The Vertical Acceleration without gravity*/
+static float accZNoGrav = 0.0; /* After IMU6 sensor fusion in g */
+static float accZNoGravComp = 0.0; /* Accounting for sensor bias with barometer data. In g */
+
+// Vertical speed (world frame) integrated from vertical acceleration
+static float vSpeedComp = 0.0;	// Compensated vertical (world frame) speed with
 static float altHoldErr;                       // Different between target and current altitude
 
 static PidObject hoverPID; // Used for hovering. I Reset on battery change status
 
-
 // Altitude hold & Baro Params
-static float altEstKp1 = 0.45; //PI Observer velocity gain
-static float altEstKp2 = 1.0;  //PI Observer positional gain
-static float altEstKi  = 0.0001; //PI Observer integral gain (bias cancellation)
+static float altEstKp1 = 0.4; //PI Observer velocity gain
+static float altEstKp2 = 1.2;  //PI Observer positional gain
+static float altEstKi = 0.0001; //PI Observer integral gain (bias cancellation)
 // PID gain constants, used every time we reinitialize the PID controller
 static float altHoldKp = 1.0;
 static float altHoldKi = 0.0;
@@ -109,7 +107,7 @@ static float altHoldTargetOffset = 0;   // Python accessible target offset up
 static float altHoldErrMax = 1.0; // max cap on current estimated altitude vs target altitude in meters
 static float altHoldChange_SENS = 200; // sensitivity of target altitude change (thrust input control) while hovering. Lower = more sensitive & faster changes
 static float pidAslFac = 13000; // relates meters asl to thrust
-static float vAccDeadband = 0.06;  // Vertical acceleration deadband
+static float vAccDeadband = 0.05;  // Vertical acceleration deadband
 static float vSpeedLimit = 5.0;  // (m/s) used to constrain vertical velocity
 static float errDeadband = 0.00;  // error (target - altitude) deadband
 static uint16_t altHoldMinThrust = 00000; // minimum hover thrust - not used yet
@@ -117,7 +115,6 @@ static uint16_t altHoldBaseThrust = 43000; // approximate throttle needed when i
 static uint16_t altHoldMaxThrust = 60000; // max altitude hold thrust
 static float hoverAlpha = 0.5; //Weighting for the hover PID control in phase 2
 static float hoverPIDVal = 0.0;
-
 
 RPYType rollType;
 RPYType pitchType;
@@ -200,10 +197,7 @@ static void stabilizerTask(void* param) {
 				sensfusion6UpdateQ(gyro.x, gyro.y, gyro.z, acc.x, acc.y, acc.z, FUSION_UPDATE_DT);
 				sensfusion6GetEulerRPY(&eulerRollActual, &eulerPitchActual, &eulerYawActual);
 
-				accWZ = sensfusion6GetAccZWithoutGravity(acc.x, acc.y, acc.z);
-				accMAG = (acc.x * acc.x) + (acc.y * acc.y) + (acc.z * acc.z);
-				// Estimate speed from acc (drifts)
-				vSpeed += deadband(accWZ, vAccDeadband) * FUSION_UPDATE_DT;
+				accZNoGrav = sensfusion6GetAccZWithoutGravity(acc.x, acc.y, acc.z);
 
 				controllerCorrectAttitudePID(eulerRollActual, eulerPitchActual, eulerYawActual,
 						eulerRollDesired, eulerPitchDesired, -eulerYawDesired, &rollRateDesired,
@@ -259,11 +253,11 @@ static void stabilizerTask(void* param) {
 	}
 }
 
+float altitudeError = 0;
+#define MAX_ACCZ_BIAS_INTEG		2000.0
 static void stabilizerAltHoldUpdate() {
-	// Get the time
-	float altitudeError = 0;
+
 	static float altitudeError_i = 0;
-	float instAcceleration = 0;
 	float deltaVertSpeed = 0;
 
 	// Get altitude hold commands from pilot
@@ -275,15 +269,16 @@ static void stabilizerAltHoldUpdate() {
 
 	// Compute the altitude
 	altitudeError = aslRaw - estimatedAltitude;
-	altitudeError_i = fmin(5.0, fmax(-5.0, altitudeError_i + altitudeError));
+	altitudeError_i = constrain(altitudeError_i + altitudeError, -MAX_ACCZ_BIAS_INTEG, MAX_ACCZ_BIAS_INTEG);
 
-	/* Estimate the instantaneous acceleration by reading the accelerometer and adjusting for altitude error. */
-	instAcceleration = deadband(accWZ, vAccDeadband) * 9.80665 + altitudeError_i * altEstKi;
-
-	deltaVertSpeed = instAcceleration * ALTHOLD_UPDATE_DT + (altEstKp1 * ALTHOLD_UPDATE_DT) * altitudeError;
+	/* Estimate the instantaneous acceleration by reading the accelerometer and adjusting for measurement bias. */
+	accZNoGravComp = deadband(accZNoGrav + altitudeError_i * altEstKi, vAccDeadband);
+	deltaVertSpeed = accZNoGravComp * 9.80665 * ALTHOLD_UPDATE_DT
+			+ (altEstKp1 * ALTHOLD_UPDATE_DT) * altitudeError;
 	/* Integrate the speed again to get the position (trapezoid rule), adding in the error */
-    estimatedAltitude += (vSpeedComp + deltaVertSpeed / 2.0) * ALTHOLD_UPDATE_DT + (altEstKp2 * ALTHOLD_UPDATE_DT) * altitudeError;
-    vSpeedComp += deltaVertSpeed;
+	estimatedAltitude += (vSpeedComp + deltaVertSpeed / 2.0) * ALTHOLD_UPDATE_DT
+			+ (altEstKp2 * ALTHOLD_UPDATE_DT) * altitudeError;
+	vSpeedComp += deltaVertSpeed;
 
 	aslLong = estimatedAltitude;		// Override aslLong
 
@@ -316,10 +311,12 @@ static void stabilizerAltHoldUpdate() {
 	if (altHold) {
 		// Update target altitude from joy controller input
 		altHoldTarget += altHoldChange / altHoldChange_SENS;
-		pidSetDesired(&altHoldPID, altHoldTarget+altHoldTargetOffset);
+		pidSetDesired(&altHoldPID, altHoldTarget + altHoldTargetOffset);
 
 		// Compute error (current - target), limit the error
-		altHoldErr = constrain(deadband(estimatedAltitude - (altHoldTarget+altHoldTargetOffset), errDeadband), -altHoldErrMax, altHoldErrMax);
+		altHoldErr = constrain(
+				deadband(estimatedAltitude - (altHoldTarget + altHoldTargetOffset), errDeadband),
+				-altHoldErrMax, altHoldErrMax);
 		pidSetError(&altHoldPID, -altHoldErr);
 
 		// Get control from PID controller, dont update the error (done above)
@@ -331,9 +328,9 @@ static void stabilizerAltHoldUpdate() {
 		float thrustValFloat;
 
 		// Compute the mixture between the alt hold and the hover PID
-		thrustValFloat = hoverAlpha*hoverPIDVal + (1-hoverAlpha)*altHoldPIDVal;
+		thrustValFloat = hoverAlpha * hoverPIDVal + (1 - hoverAlpha) * altHoldPIDVal;
 
-		uint32_t thrustVal = altHoldBaseThrust + (int32_t)(thrustValFloat*pidAslFac);
+		uint32_t thrustVal = altHoldBaseThrust + (int32_t) (thrustValFloat * pidAslFac);
 
 		// compute new thrust
 		actuatorThrust = max(altHoldMinThrust, min(altHoldMaxThrust, limitThrust( thrustVal )));
@@ -354,8 +351,7 @@ static void distributePower(const uint16_t thrust, const int16_t roll, const int
 	motorPowerM2 = limitThrust(thrust - roll - pitch - yaw);
 	motorPowerM3 = limitThrust(thrust + roll - pitch + yaw);
 	motorPowerM4 = limitThrust(thrust + roll + pitch - yaw);
-#else // QUAD_FORMATION_NORMAL
-	motorPowerM1 = limitThrust(thrust + pitch + yaw);
+#else // QUAD_FORMATION_NORMAL	motorPowerM1 = limitThrust(thrust + pitch + yaw);
 	motorPowerM2 = limitThrust(thrust - roll - yaw);
 	motorPowerM3 = limitThrust(thrust - pitch + yaw);
 	motorPowerM4 = limitThrust(thrust + roll - yaw);
@@ -403,8 +399,8 @@ LOG_GROUP_STOP(stabilizer)
 LOG_GROUP_START(acc) LOG_ADD(LOG_FLOAT, x, &acc.x)
 LOG_ADD(LOG_FLOAT, y, &acc.y)
 LOG_ADD(LOG_FLOAT, z, &acc.z)
-LOG_ADD(LOG_FLOAT, zw, &accWZ)
-LOG_ADD(LOG_FLOAT, mag2, &accMAG)
+LOG_ADD(LOG_FLOAT, zw, &accZNoGrav)
+LOG_ADD(LOG_FLOAT, zwComp, &accZNoGravComp)
 LOG_GROUP_STOP(acc)
 
 LOG_GROUP_START(gyro) LOG_ADD(LOG_FLOAT, x, &gyro.x)
@@ -439,6 +435,7 @@ LOG_GROUP_START(baro)
 LOG_ADD(LOG_FLOAT, estimatedAltitude, &estimatedAltitude)
 LOG_ADD(LOG_FLOAT, aslRaw, &aslRaw)
 LOG_ADD(LOG_FLOAT, aslLong, &aslLong)
+LOG_ADD(LOG_FLOAT, altError, &altitudeError)
 LOG_ADD(LOG_FLOAT, temp, &temperature)
 LOG_ADD(LOG_FLOAT, pressure, &pressure)
 LOG_GROUP_STOP(baro)
@@ -446,8 +443,6 @@ LOG_GROUP_STOP(baro)
 LOG_GROUP_START(altHold)
 LOG_ADD(LOG_FLOAT, err, &altHoldErr)
 LOG_ADD(LOG_FLOAT, target, &altHoldTarget)
-LOG_ADD(LOG_FLOAT, zSpeed, &vSpeed)
-LOG_ADD(LOG_FLOAT, vSpeed, &vSpeed)
 LOG_ADD(LOG_FLOAT, vSpeedComp, &vSpeedComp)
 LOG_GROUP_STOP(altHold)
 
