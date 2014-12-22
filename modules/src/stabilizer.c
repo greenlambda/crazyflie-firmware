@@ -278,7 +278,7 @@ static void stabilizerAltHoldUpdate() {
 			+ (altEstKp2 * ALTHOLD_UPDATE_DT) * altitudeError;
 
 	// Estimate vertical speed based on Acc - fused with baro to reduce drift
-	vSpeedComp += constrain(vSpeedComp + deltaVertSpeed, -vSpeedLimit, vSpeedLimit);
+	vSpeedComp = constrain(vSpeedComp + deltaVertSpeed, -vSpeedLimit, vSpeedLimit);
 
 	aslLong = estimatedAltitude;		// Override aslLong
 
